@@ -1,0 +1,17 @@
+{
+  "name": "Dispatch Command",
+  "short_name": "Dispatch",
+  "description": "911 dispatch game on a live map.",
+  "id": "phone.html",
+  "start_url": "phone.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e151e",
+  "theme_color": "#151f2b",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
