@@ -652,7 +652,8 @@ html.ph #win .phmap{margin-left:auto}
 .pmore .pmenu .btn{width:100%;text-align:left}
 html.ph #win.ph-cad .wtabs,html.ph #win.ph-cad .utabs{display:none!important}
 html.ph #win.ph-cad .wbody.split{display:block!important;overflow:auto!important;flex:1;min-height:0;overscroll-behavior:contain}
-html.ph #win.ph-cad .wbody.split > div{overflow:visible!important;border:0!important}
+html.ph #win.ph-cad .wbody.split > div:not(.pctabs){overflow:visible!important;border:0!important}
+html.ph #win.ph-cad .wbody.split > .pctabs{overflow-x:auto!important;overflow-y:hidden!important;border:0;border-bottom:1px solid var(--line)!important}
 html.ph #win.ph-cad.ph-units .wbody.split > div:not(.ucol):not(.pctabs){display:none!important}
 html.ph #win.ph-cad.ph-info .wbody.split > .ucol{display:none!important}
 .pctabs{display:flex;gap:2px;padding:0 6px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:5}
@@ -7906,7 +7907,7 @@ function menuItems(){ // reuse the PC Menu so new items show up here automatical
   PH.inItems = true; try{ openMenu('main'); html = m.innerHTML; }catch(e){ console.error(e); } finally { PH.inItems = false; } m.hidden = true; UI.menu = was && was!=='main' && was!=='ops' ? was : false;
   const box = document.createElement('div'); box.innerHTML = html; box.querySelectorAll('[data-act="winreset"]').forEach(b=>b.remove());
   return box.innerHTML; }
-function renderMenu(force){ if(!vis(menuEl) || !G) return; if(PH.touching && !force) return;
+function renderMenu(force){ if(!vis(menuEl) || !G) return; if(PH.busy() && !force) return;
   const rqN = rq().length, tx = +txt('txCount')||0, cov = +txt('covCount')||0;
   const row = (attr, label, val, hot) => `<button class="btn ${hot?'hot':''}" ${attr}><span>${label}</span><span class="mono">${val ?? ''}</span></button>`;
   const ops = OPS.filter(([id])=>PANELS[id]).map(([id,l,n])=>{ let v = ''; try{ v = n() || ''; }catch(e){} return row(`data-phopen="${id}"`, esc(l), v); }).join('');
@@ -7929,15 +7930,29 @@ PH.renderMenu = renderMenu;
 { const _om = openMenu; openMenu = function(kind){ _om(kind); if(!PH.inItems && vis(menuEl)) setTimeout(()=>renderMenu(true), 0); }; }
 
 /* ---------------- render gating: only draw what you can see, never under your finger ---------------- */
-{ const _rq = renderQueue; renderQueue = function(){ if(!vis(queue) || PH.touching){ if(!vis(queue)) lastQueue = ''; return; } return _rq.apply(this, arguments); }; }
-{ const _rs = renderSide; renderSide = function(force){ if(!vis(side) || (PH.touching && !force)) return; return _rs.apply(this, arguments); }; }
-{ const _rf = renderFeed; renderFeed = function(){ if(PH.touching) return; return _rf.apply(this, arguments); }; }
+/* keep sideways-scrolled rows (tab rows, filter chips, tables) where you left them when a screen redraws */
+PH.scrollAt = 0; PH.hsave = new Map();
+PH.busy = () => { const now = performance.now(); if(now - (PH.lastTap||0) < 400) return false; return PH.touching || now - PH.scrollAt < 600; };
+function hroot(el){ return el.closest(SHEET_SEL + ', #queue'); }
+function rootKey(root){ if(!root) return ''; if(root.id==='win') return 'win:' + (UI.win ? UI.win.kind + ':' + UI.win.id : ''); return root.id || root.dataset.panel || ''; }
+function selOf(el){ const c = (el.getAttribute('class')||'').trim().split(/\s+/).filter(x=>x && /^[\w-]+$/.test(x) && x!=='on'); return el.tagName.toLowerCase() + c.map(x=>'.'+x).join(''); }
+function hkey(el){ const root = hroot(el); if(!root) return null; const sel = selOf(el); const idx = [...root.querySelectorAll(sel)].indexOf(el); return idx < 0 ? null : rootKey(root) + '|' + sel + '|' + idx; }
+document.addEventListener('scroll', e=>{ const t = e.target; if(!t || t===document || t.nodeType!==1) return;
+  if(t._phSet != null && Math.abs(t.scrollLeft - t._phSet) < 2){ t._phSet = null; return; } // our own restore, not you
+  const now = performance.now(); if(PH.touching || now - (PH.touchEnd||0) < 1500) PH.scrollAt = now; // only scrolls you make (incl. the glide after you let go)
+  if(t.scrollWidth > t.clientWidth + 2){ const k = hkey(t); if(k){ if(t.scrollLeft > 0) PH.hsave.set(k, t.scrollLeft); else PH.hsave.delete(k); } } }, {capture:true, passive:true});
+function hrestore(root){ if(!root || !PH.hsave.size) return; const rk = rootKey(root) + '|';
+  for(const [k, v] of PH.hsave){ if(!k.startsWith(rk)) continue; const [, sel, idx] = k.split('|'); const el = root.querySelectorAll(sel)[+idx]; if(el && Math.abs(el.scrollLeft - v) > 1){ el._phSet = v; el.scrollLeft = v; } } }
+PH.hrestore = hrestore;
+{ const _rq = renderQueue; renderQueue = function(){ if(!vis(queue) || PH.busy()){ if(!vis(queue)) lastQueue = ''; return; } const r = _rq.apply(this, arguments); hrestore(queue); return r; }; }
+{ const _rs = renderSide; renderSide = function(force){ if(!vis(side) || (PH.busy() && !force)) return; const r = _rs.apply(this, arguments); hrestore(side); return r; }; }
+{ const _rf = renderFeed; renderFeed = function(){ if(PH.busy()) return; return _rf.apply(this, arguments); }; }
 { const _rp = renderPanel; renderPanel = function(id){ const st = PS[id];
-    if(st && st.el && vis(st.el) && (PH.touching || PH.top()!==st.el)) return;
+    if(st && st.el && vis(st.el) && (PH.busy() || PH.top()!==st.el)) return;
     // big windows (like the unit board with 300+ units) redraw less often on their own; timers still tick, and taps redraw right away
     const now = performance.now();
     if(st && st.el && st._phNext && now < st._phNext && now - (PH.lastTap||0) > 500){ if(now - (st._phLt||0) > 1000){ st._phLt = now; try{ liveTimers(st.el); }catch(e){} } return; }
-    _rp(id); const took = performance.now() - now;
+    _rp(id); const took = performance.now() - now; if(st && st.el) hrestore(st.el);
     if(st){ const big = st.el && st.el.getElementsByTagName('*').length > 1200; st._phNext = took > 12 ? now + Math.min(4000, Math.max(big ? 1000 : 0, took * 8)) : big ? now + 1000 : 0; }
     try{ afterPanel(id); }catch(e){ console.error(e); } }; }
 { const _rw = renderWin; renderWin = function(){
@@ -7949,16 +7964,16 @@ PH.renderMenu = renderMenu;
       if(!(prev && prev.kind===UI.win.kind && prev.id===UI.win.id)) PH.cadSide = null;
       front(W); syncStack(); }
     if(!UI.win){ PH.lastWinObj = null; PH.winHist = []; }
-    if(UI.win && vis(W) && (PH.touching || PH.top()!==W)){ UI.dirty = true; return; }
+    if(UI.win && vis(W) && (PH.busy() || PH.top()!==W)){ UI.dirty = true; return; }
     const st = W.scrollTop; _rw.apply(this, arguments); if(W.scrollTop !== st && UI.win) W.scrollTop = st;
-    try{ afterWin(); }catch(e){ console.error(e); } }; }
+    try{ afterWin(); }catch(e){ console.error(e); } hrestore(W); }; }
 { const _cw = closeWin; closeWin = function(){ PH.winHist = []; PH.lastWinObj = null; return _cw.apply(this, arguments); }; }
 { const _op = openPanel; openPanel = function(id){ _op(id); const el = PS[id]?.el; if(el && !el.hidden){ front(el); el._phOpen = true; syncStack(); renderPanel(id); } }; }
 
 // finger on the glass = no redraws (so a tap never lands on a button that just moved)
 let touchT = 0;
 document.addEventListener('touchstart', ()=>{ PH.touching = true; clearTimeout(touchT); touchT = setTimeout(()=>{ PH.touching = false; }, 6000); }, {capture:true, passive:true});
-const lift = e => { if(!e.touches || e.touches.length===0){ PH.touching = false; clearTimeout(touchT); } };
+const lift = e => { if(!e.touches || e.touches.length===0){ PH.touching = false; PH.touchEnd = performance.now(); clearTimeout(touchT); } };
 document.addEventListener('touchend', lift, {capture:true, passive:true}); document.addEventListener('touchcancel', lift, {capture:true, passive:true});
 
 /* ---------------- window headers: Back on the left, no pop-out ---------------- */
@@ -8015,7 +8030,9 @@ function afterWin(){
     const ub = [...W.querySelectorAll('.utabs button')].map(b=>({k:'u:'+(b.dataset.utab||'oncall'), l:b.textContent, on: side_==='units' && (b.dataset.utab||'oncall')===utab}));
     const lb = [...W.querySelectorAll('.wtabs button')].map(b=>({k:'w:'+b.dataset.wtab, l:b.textContent, on: side_==='info' && b.dataset.wtab===wt}));
     const h = [...ub, ...lb].map(t=>`<button data-pct="${t.k}" class="${t.on?'on':''}">${esc(t.l)}</button>`).join('');
-    if(row._h !== h){ row._h = h; row.innerHTML = h; const on = row.querySelector('.on'); if(on) on.scrollIntoView({block:'nearest', inline:'nearest'}); } }
+    if(row._h !== h){ row._h = h; row.innerHTML = h; hrestore(W); }
+    const act = (row.querySelector('.on')||{}).dataset?.pct; if(act && act !== PH.lastPct){ PH.lastPct = act; const on = row.querySelector('.on');
+      if(on){ const l = on.offsetLeft, r = l + on.offsetWidth; if(l < row.scrollLeft) row.scrollLeft = l - 8; else if(r > row.scrollLeft + row.clientWidth) row.scrollLeft = r - row.clientWidth + 8; } } }
 }
 PH.afterWin = afterWin;
 
