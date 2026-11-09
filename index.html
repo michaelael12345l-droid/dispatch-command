@@ -2879,6 +2879,7 @@ function stationHTML(s){
         <div class="stat"><small>On units</small><b class="mono">${ppl.filter(p=>p.st==='unit').length}</b></div>
         <div class="stat"><small>Coming in</small><b class="mono">${ppl.filter(p=>p.st==='resp').length}</b></div>
         <div class="stat"><small>On call</small><b class="mono">${pageableAt(s).length}</b></div></div>
+        ${respondingTo(s).length?`<div class="actions" style="margin-top:8px"><button class="btn small" data-calloffst="${s.id}">Call off all ${respondingTo(s).length} coming in</button></div>`:''}
         ${s.staffing==='duty'?`<p class="note">Duty crew hours ${String(s.duty?.start??6).padStart(2,'0')}:00–${String(s.duty?.end??18).padStart(2,'0')}:00 · ${onDuty(s)?'on duty now':'off duty now, full-time members respond like paid on call'}.</p>`:''}</div>
       <div class="wsec"><h3>Hire</h3><div class="hireform">
         <select class="field" id="hType" aria-label="Member type">${types.map(t=>`<option value="${t}" ${t===(UI.hType||defType)?'selected':''}>${MTYPE[t]}</option>`).join('')}</select>
@@ -2891,7 +2892,7 @@ function stationHTML(s){
       <div class="wsec"><h3>Roster</h3>${ppl.length?`<div style="overflow-x:auto"><table class="txt roster"><thead><tr><th>Name</th><th>Rank</th><th>Type</th><th>Assigned</th><th>Status</th><th></th></tr></thead><tbody>${rosterSort([...ppl], stDept(s)).map((p,i,a)=>{ const [st,cls] = memberStatus(p,s); const au = p.unit && unitById(p.unit);
           return rosterHead(p, a[i-1], stDept(s), 6, a) + `<tr class="${p.isNew?'rnew':''}"><td><b>${esc(p.name)}</b>${p.isNew?` <button class="btn small" data-mdone="${p.id}">Done</button>`:''}${paraOK(p)&&d!=='ems'?' <span class="pill st-new">PM</span>':''}</td>
             <td>${G.mode==='sandbox'?`<select class="field small" id="prank-${p.id}">${deptRanks(s).map(r=>`<option ${r===p.rank?'selected':''}>${r}</option>`).join('')}</select>`:esc(p.rank)}</td>
-            <td>${MTYPE[p.type]}</td><td>${assignCell(p, s)}</td><td><span class="pill ${cls}">${esc(st)}</span></td>
+            <td>${MTYPE[p.type]}</td><td>${assignCell(p, s)}</td><td><span class="pill ${cls}">${esc(st)}</span>${p.st==='resp'?` <button class="btn small" data-calloff="${p.id}">Call off</button>`:''}</td>
             <td><button class="btn small" data-pfire="${p.id}" ${p.st==='unit'?'disabled':''}>${UI.confirmFire===p.id?'Confirm':'Release'}</button></td></tr>`; }).join('')}</tbody></table></div>`:'<p class="note">No members yet. Hire some above.</p>'}</div>`;
   } else {
     const isPolice = d==='police';
@@ -6897,11 +6898,36 @@ function otPage(s, rig, quiet){ const d = stDept(s); if(!d) return 0; rig = rig 
   pool.forEach(tryP);
   if(!picked.length){ if(!quiet) toast(`Nobody answered the overtime page for ${rig.callsign}.`); log(`Overtime page for <b>${esc(rig.callsign)}</b>: no answer`); return 0; }
   const until = G.time + 12*3600;
-  picked.forEach(p=>{ p.st = 'resp'; p.arr = G.time + rand(900, 2400); p.stbyUntil = null; p.otFor = rig.id; p.otUntil = until; if(p.sid!==s.id){ p.homeSid = p.homeSid ?? p.sid; p.sid = s.id; } if(!('unitHome' in p)) p.unitHome = p.unit; p.unit = rig.id; });
+  picked.forEach(p=>{ p.st = 'resp'; p.arr = G.time + cbWindow(p); p.stbyUntil = null; p.otFor = rig.id; p.otUntil = until; if(p.sid!==s.id){ p.homeSid = p.homeSid ?? p.sid; p.sid = s.id; } if(!('unitHome' in p)) p.unitHome = p.unit; p.unit = rig.id; });
   rig.otCall = {at:G.time, n:picked.length, need:seats, until};
   const txt = `${d.short||d.name} OVERTIME PAGE: ${picked.length} OF ${seats} COMING IN TO STAFF ${rig.callsign.toUpperCase()} AT ${s.name.toUpperCase()}`;
   rlog().unshift({t:G.time, who:'DISPATCH', text:txt, kind:'info'}); log(esc(txt)); if(!quiet) toast(`${picked.length} of ${seats} coming in on overtime for ${rig.callsign}. First one in about ${fmtTime(Math.min(...picked.map(p=>p.arr)) - G.time)}.`);
   playTone(d.service, false); UI.dirty = true; save(); return picked.length; }
+// How long a called-back member takes to reach the station: paid on call / volunteers 3-6 min, full time 5-10 min. Nobody takes more than 10.
+const CB_MAX = 600;
+function cbWindow(p){ return p.type==='ft' ? rand(300, 600) : rand(180, 360); }
+// Call off someone who is on the way in (paged by mistake, or not needed). Works before they reach the station.
+function callOff(p){ if(!p || p.st!=='resp') return false;
+  const rig = p.otFor ? unitById(p.otFor) : null;
+  if(p.otFor){ delete p.otFor; p.otUntil = null; if(p.homeSid){ p.sid = p.homeSid; p.homeSid = null; } if('unitHome' in p){ p.unit = p.unitHome; delete p.unitHome; } }
+  p.st = 'idle'; p.arr = null; p.stbyUntil = null; p.until = null; if(p.trainSid) delete p.trainSid;
+  if(rig && rig.otCall && !G.people.some(x=>x.otFor===rig.id)){ if(rig.otIn && rig.status==='home' && isResRig(rig)) toReserve(rig); rig.otCall = null; rig.otIn = false; }
+  return true; }
+// Call off a whole overtime crew for one rig: the ones still coming, and (if the rig is in quarters) the ones already in.
+function otCallOff(u){ if(!u) return 0; const crew = G.people.filter(p=>p.otFor===u.id); let n = 0;
+  crew.forEach(p=>{ if(p.st==='resp'){ if(callOff(p)) n++; } else if(u.status==='home' && p.st!=='unit'){ delete p.otFor; p.otUntil = null; if(p.homeSid){ p.sid = p.homeSid; p.homeSid = null; } if('unitHome' in p){ p.unit = p.unitHome; delete p.unitHome; } p.st = 'idle'; p.until = null; n++; } });
+  if(!G.people.some(p=>p.otFor===u.id)){ if(u.otIn && u.status==='home' && isResRig(u)) toReserve(u); u.otCall = null; u.otIn = false; }
+  return n; }
+// Anyone already on the way when this rule came in gets capped to the new times (runs once per game load).
+HOOK.tick.push(()=>{ if(UI._cbCap) return; UI._cbCap = true; let n = 0;
+  G.people.forEach(p=>{ if(p.st==='resp' && p.arr && p.arr - G.time > CB_MAX){ p.arr = G.time + Math.min(CB_MAX, cbWindow(p)); n++; } });
+  if(n) UI.dirty = true; });
+HOOK.click.push(d0=>{
+  if(d0.calloff){ const p = personById(+d0.calloff); if(callOff(p)){ toast(`${p.name} called off.`); log(`${esc(p.rank)} ${esc(p.name)} called off before reaching the station`); save(); } UI.dirty = true; renderWin(); renderPanels(); return true; }
+  if(d0.calloffst){ const s = stationById(+d0.calloffst); if(!s) return true; const list = respondingTo(s); let n = 0; list.forEach(p=>{ if(callOff(p)) n++; });
+    toast(n ? `${n} member${n===1?'':'s'} called off at ${s.name}.` : 'Nobody is on the way in.'); if(n) log(`${n} responding member${n===1?'':'s'} called off at <b>${esc(s.name)}</b>`); save(); UI.dirty = true; renderWin(); renderPanels(); renderSide(true); return true; }
+  if(d0.otoff){ const u = unitById(+d0.otoff); const n = otCallOff(u); toast(n ? `Overtime crew for ${u.callsign} called off (${n}).` : `Nobody to call off for ${u?.callsign||'that rig'}.`); if(n) log(`Overtime crew for <b>${esc(u.callsign)}</b> called off`); save(); UI.dirty = true; renderWin(); renderPanels(); renderSide(true); return true; }
+  return false; });
 function otAll(d){ let rigs = 0, ppl = 0; G.stations.filter(s=>s.deptId===d.id).forEach(s=>resRigsAt(s).forEach(r=>{ const n = otPage(s, r, true); if(n){ rigs++; ppl += n; } }));
   toast(rigs ? `Overtime page: ${ppl} members coming in to staff ${rigs} reserve rig${rigs===1?'':'s'}.` : 'No reserve rigs to staff, or nobody answered.', true); renderPanels(); return rigs; }
 HOOK.tick.push(()=>{ if(UI._otT && Date.now() - UI._otT < 1000) return; UI._otT = Date.now();
@@ -6914,10 +6940,10 @@ HOOK.tick.push(()=>{ if(UI._otT && Date.now() - UI._otT < 1000) return; UI._otT 
       log(`<b>${esc(u.callsign)}</b> back to reserve, overtime crew released`); renderSide(true); } } });
 { const _rt = rosterTodayHTML; rosterTodayHTML = function(s){ const out = _rt(s), d = stDept(s); if(!d || d.mode!=='unit' || d.service!=='fire') return out; const rr = resRigsAt(s), staffing = G.units.filter(u=>u.stationId===s.id && u.otCall);
   return out + `<div class="wsec"><h3>Overtime callback</h3><p class="note">Off-duty members come in on overtime and put a reserve rig in service here. ${rr.length} reserve rig${rr.length===1?'':'s'} waiting${staffing.length?` · ${staffing.map(u=>`${esc(u.callsign)} ${u.otIn?'in service':'crew coming in'}`).join(', ')}`:''}.</p>
-    <div class="actions"><button class="btn small primary" data-otst="${s.id}" ${rr.length?'':'disabled'}>Page overtime crew</button></div></div>`; }; }
+    <div class="actions"><button class="btn small primary" data-otst="${s.id}" ${rr.length?'':'disabled'}>Page overtime crew</button>${staffing.filter(u=>!u.otIn || u.status==='home').map(u=>`<button class="btn small" data-otoff="${u.id}">${u.otIn?'Send '+esc(u.callsign)+' crew home':'Call off '+esc(u.callsign)+' crew'}</button>`).join('')}</div></div>`; }; }
 function otBtn(u){ if(isResRig(u) && !u.otCall) return `<button class="btn small" data-otpage="${u.id}" title="Off-duty members come in on overtime and put this rig in service">Staff with overtime</button>`;
-  if(u.otCall && !u.otIn){ const n = G.people.filter(p=>p.otFor===u.id && p.st!=='resp').length; return `<span class="ty">Overtime crew coming: ${n} of ${u.otCall.n} in</span>`; }
-  if(u.otIn) return `<span class="ty">Overtime crew until ${clockStr(u.otCall.until).slice(-5)}</span>`; return ''; }
+  if(u.otCall && !u.otIn){ const n = G.people.filter(p=>p.otFor===u.id && p.st!=='resp').length; return `<span class="ty">Overtime crew coming: ${n} of ${u.otCall.n} in</span> <button class="btn small" data-otoff="${u.id}">Call off</button>`; }
+  if(u.otIn) return `<span class="ty">Overtime crew until ${clockStr(u.otCall.until).slice(-5)}</span>${u.status==='home'?` <button class="btn small" data-otoff="${u.id}">Send crew home</button>`:''}`; return ''; }
 HOOK.click.push(d0=>{ if(d0.otpage){ const u = unitById(+d0.otpage), s = u && stationById(u.stationId); if(s) otPage(s, u); renderWin(); return true; }
   if(d0.otst){ const s = stationById(+d0.otst); if(s) otPage(s); renderWin(); return true; }
   if(d0.otall){ const d = deptById(+d0.otall); if(d) otAll(d); renderWin(); return true; } return false; });
